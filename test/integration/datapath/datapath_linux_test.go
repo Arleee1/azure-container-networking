@@ -16,6 +16,7 @@ import (
 	"github.com/pkg/errors"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -119,14 +120,22 @@ func setupLinuxEnvironment(t *testing.T) {
 
 	t.Cleanup(func() {
 		t.Log("cleaning up resources")
-		rbacSetupFn()
+		cleanupCtx, cancel := context.WithTimeout(ctx, defaultTimeoutSeconds*time.Second)
+		defer cancel()
+		defer rbacSetupFn()
 
-		if err := deploymentsClient.Delete(ctx, deployment.Name, metav1.DeleteOptions{}); err != nil {
-			t.Log(err)
+		if err := deploymentsClient.Delete(cleanupCtx, deployment.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("deleting deployment %s: %v", deployment.Name, err)
 		}
 
-		if err := daemonsetClient.Delete(ctx, daemonset.Name, metav1.DeleteOptions{}); err != nil {
-			t.Log(err)
+		if err := daemonsetClient.Delete(cleanupCtx, daemonset.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("deleting daemonset %s: %v", daemonset.Name, err)
+		}
+
+		for _, selector := range []string{podLabelSelector, metav1.FormatLabelSelector(daemonset.Spec.Selector)} {
+			if err := kubernetes.WaitForPodsDelete(cleanupCtx, clientset, *podNamespace, selector); err != nil {
+				t.Errorf("waiting for pods with selector %q to be deleted: %v", selector, err)
+			}
 		}
 	})
 
